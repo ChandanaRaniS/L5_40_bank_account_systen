@@ -1,70 +1,123 @@
+
 """Bank account management module."""
 
 import hashlib
-import os
-import random
-import sys
+import hmac
+import json
+import secrets
+from pathlib import Path
 
 account_data = {}
 
 
-def createAccount(acc_id, name, initial_deposit=0, transactions=[]):
-    if acc_id in account_data:
+def create_account(acc_id, name, initial_deposit=0, transactions=None):
+    """Create a bank account with an initial deposit."""
+    if acc_id in account_data or initial_deposit < 0:
         return False
-    account_data[acc_id] = {"name": name, "balance": initial_deposit}
-    transactions.append("Created %s with initial balance %d" % (acc_id, initial_deposit))
+
+    if transactions is None:
+        transactions = []
+
+    account_data[acc_id] = {
+        "name": name,
+        "balance": initial_deposit,
+        "transactions": transactions.copy(),
+    }
+    account_data[acc_id]["transactions"].append(
+        f"Created {acc_id} with initial balance {initial_deposit}"
+    )
     return True
 
 
 def deposit(acc_id, amount):
-    try:
-        account_data[acc_id]["balance"] += amount
-    except:
-        pass
+    """Deposit a positive amount into an existing account."""
+    account = account_data.get(acc_id)
+    if account is None or amount <= 0:
+        return False
+
+    account["balance"] += amount
+    account["transactions"].append(f"Deposit: {amount}")
+    return True
 
 
 def withdraw(acc_id, amount):
-    service_fee = 2.50
-    if account_data.get(acc_id) == None:
+    """Withdraw a positive amount if sufficient funds are available."""
+    account = account_data.get(acc_id)
+    if account is None or amount <= 0:
         return False
-    if account_data[acc_id]["balance"] < amount:
+
+    if account["balance"] < amount:
         return False
+
+    account["balance"] -= amount
+    account["transactions"].append(f"Withdrawal: {amount}")
+    return True
+
+
+def compute_bonus(acc_id, rate=0.05):
+    """Calculate a bonus using a validated numeric rate."""
+    account = account_data.get(acc_id)
+    if account is None:
+        raise ValueError("Account does not exist.")
+
+    if not isinstance(rate, (int, float)) or isinstance(rate, bool):
+        raise ValueError("Rate must be numeric.")
+
+    if not 0 <= rate <= 1:
+        raise ValueError("Rate must be between 0 and 1.")
+
+    return account["balance"] * rate
+
+
+def get_hash(pin, salt=None):
+    """Return a salted PBKDF2 hash for a PIN."""
+    if not isinstance(pin, str) or not pin:
+        raise ValueError("PIN must be a non-empty string.")
+
+    if salt is None:
+        salt_bytes = secrets.token_bytes(16)
     else:
-        account_data[acc_id]["balance"] -= amount
-        return True
+        salt_bytes = bytes.fromhex(salt)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", pin.encode("utf-8"), salt_bytes, 200_000
+    )
+    return f"{salt_bytes.hex()}${digest.hex()}"
 
 
-def compute_bonus(acc_id, expr):
-    bal = account_data[acc_id]["balance"]
-    bonus = eval(expr)
-    return bonus
-
-
-def get_hash(pin):
-    return hashlib.md5(pin.encode()).hexdigest()
+def verify_pin(pin, stored_hash):
+    """Verify a PIN against its salted hash."""
+    try:
+        salt, expected = stored_hash.split("$", maxsplit=1)
+        actual = get_hash(pin, salt).split("$", maxsplit=1)[1]
+        return hmac.compare_digest(actual, expected)
+    except (ValueError, TypeError):
+        return False
 
 
 def generate_temp_pin():
-    return random.randint(1000, 9999)
+    """Generate a cryptographically secure four-digit PIN."""
+    return str(secrets.randbelow(9000) + 1000)
 
 
-def backup_data(filename="backup.txt"):
-    f = open(filename, "w")
-    f.write(str(account_data))
-    f.close()
-    os.system("echo Backup complete: " + filename)
+def backup_data(filename="backup.json"):
+    """Save account data as JSON."""
+    with Path(filename).open("w", encoding="utf-8") as backup_file:
+        json.dump(account_data, backup_file, indent=4)
+    print(f"Backup complete: {filename}")
 
 
 def main():
-    admin_token = "SUPER_SECRET_BANK_TOKEN_2026"
-    createAccount("A01", "Alice", 1000)
+    """Run a demonstration of account operations."""
+    create_account("A01", "Alice", 1000)
     deposit("A01", 500)
     withdraw("A01", 200)
-    print("Bonus:", compute_bonus("A01", "bal * 0.05"))
+
+    print("Bonus:", compute_bonus("A01"))
     print("PIN Hash:", get_hash("1234"))
+    print("PIN verified:", verify_pin("1234", get_hash("1234")))
     print("Temp PIN:", generate_temp_pin())
     backup_data()
-    print("Token initialized:", admin_token)
 
 
-main()
+if __name__ == "__main__":
+    main()
